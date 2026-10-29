@@ -167,6 +167,7 @@ class Demo:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--evidence-dir", type=Path)
+    parser.add_argument("--coverage", action="store_true", help="collect instrumented process coverage")
     args = parser.parse_args()
     evidence = (args.evidence_dir or Path(tempfile.mkdtemp(prefix="libratrack-smoke-"))).resolve()
     if evidence == ROOT or ROOT in evidence.parents:
@@ -175,15 +176,22 @@ def main():
     for port in (50051, 8080):
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", port))
+    if args.coverage:
+        coverage = evidence / "coverage"
+        coverage.mkdir(exist_ok=True)
+        os.environ["GOCOVERDIR"] = str(coverage)
     demo = Demo(evidence)
     demo.bin.mkdir(exist_ok=True)
     try:
-        demo.run(["go", "build", "-o", str(demo.bin) + os.sep, "./cmd/inventory-server", "./cmd/inventory-client", "./cmd/gateway", "./cmd/gencerts", "./cmd/mint-token"])
+        build_flags = ["-cover", "-covermode=atomic", "-coverpkg=./..."] if args.coverage else []
+        demo.run(["go", "build", *build_flags, "-o", str(demo.bin) + os.sep, "./cmd/inventory-server", "./cmd/inventory-client", "./cmd/gateway", "./cmd/gencerts", "./cmd/mint-token"])
         demo.basic()
         demo.secure()
     finally:
         demo.stop()
         (evidence / "smoke-results.json").write_text(json.dumps(demo.results, indent=2) + "\n")
+    if args.coverage:
+        demo.run(["go", "tool", "covdata", "textfmt", "-i", str(coverage), "-o", str(evidence / "coverage.out")])
     print(f"PASS={len(demo.results)} FAIL=0\nEvidence: {evidence}")
 
 

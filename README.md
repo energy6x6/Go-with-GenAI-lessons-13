@@ -187,7 +187,30 @@ go test ./bench -run '^$' -bench=. -benchmem -benchtime=1s -count=3
 
 ## Локальний SonarQube
 
-Додаткова статична перевірка виконується в SonarQube Community через Docker. `sonar-project.properties` виключає generated-код і сторонні схеми; токен, робочий каталог scanner та звіт покриття передаються ззовні. Локальний результат не позначається як SonarQube Cloud.
+Додаткова статична перевірка виконується в SonarQube Community 26.10 через Docker. Контейнер доступний лише через http://127.0.0.1:9000; H2 використовується для локального навчального запуску. Образи сервера та scanner зафіксовано за digest.
+
+```bash
+docker compose -p lesson13-quality -f compose.sonarqube.yml up -d
+```
+
+Створіть у локальному SonarQube проєкт `libratrack-lesson13` та analysis token для нього. Передайте токен змінною `SONAR_TOKEN`; не записуйте його до Git. У наведених командах задайте власний абсолютний зовнішній каталог:
+
+```bash
+export SONAR_EVIDENCE_DIR=/absolute/path/outside/repository/quality
+mkdir -p "$SONAR_EVIDENCE_DIR"
+go test -race -count=1 -coverprofile="$SONAR_EVIDENCE_DIR/unit.out" ./...
+bash scripts/smoke.sh --coverage --evidence-dir "$SONAR_EVIDENCE_DIR/smoke"
+python3 scripts/merge-coverage.py "$SONAR_EVIDENCE_DIR/unit.out" "$SONAR_EVIDENCE_DIR/smoke/coverage.out" --output "$SONAR_EVIDENCE_DIR/coverage.out"
+bash scripts/sonar.sh
+```
+
+Покриття об'єднує unit/transport-тести та інструментовані запуски CLI, сервера й gateway. `sonar-project.properties` виключає generated-код і сторонні схеми. Scanner читає код через read-only mount, а його робочий каталог та звіт покриття залишаються ззовні. Локальний результат не позначається як SonarQube Cloud.
+
+Зупинка зі збереженням результатів:
+
+```bash
+docker compose -p lesson13-quality -f compose.sonarqube.yml stop
+```
 
 ## Діагностика
 
