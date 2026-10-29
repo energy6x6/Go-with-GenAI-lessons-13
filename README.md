@@ -206,6 +206,8 @@ bash scripts/sonar.sh
 
 Покриття об'єднує unit/transport-тести та інструментовані запуски CLI, сервера й gateway. `sonar-project.properties` виключає generated-код і сторонні схеми. Scanner читає код через read-only mount, а його робочий каталог та звіт покриття залишаються ззовні. Локальний результат не позначається як SonarQube Cloud.
 
+Перевірка 29.10.2026: аналіз виконано успішно, 0 issues, 0 bugs, 0 vulnerabilities, 0 code smells, 0 security hotspots, дублювання 0,0%, загальне покриття 79,4%; Quality Gate — OK. Профіль Go: Sonar way core; проаналізовано 21 Go-файл. Покриття імпортовано з unit/transport-тестів та інструментованих smoke-сценаріїв.
+
 Зупинка зі збереженням результатів:
 
 ```bash
