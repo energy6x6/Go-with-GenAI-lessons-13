@@ -1,0 +1,124 @@
+// inventory.proto — контракт InventoryService (LibraTrack, Урок 13).
+//
+// Один файл = весь контракт. З нього генеруються:
+//   gen/inventory/inventory.pb.go         — структури messages
+//   gen/inventory/inventory_grpc.pb.go    — інтерфейси сервера та клієнтський стаб
+//   gen/inventory/inventory.pb.gw.go      — REST-місток (grpc-gateway)
+syntax = "proto3";
+
+package inventory.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "libratrack/gen/inventory";
+
+// ---------------------------------------------------------------------------
+// Messages (слайди 12–13)
+// ---------------------------------------------------------------------------
+
+// Copy — фізичний примірник книги в бібліотеці.
+message Copy {
+  string id = 1;
+  string book_id = 2;
+  string inventory_number = 3;
+  Status status = 4;
+
+  // Status — стан примірника. Нульове значення обов'язкове (конвенція proto3).
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    AVAILABLE = 1;
+    BORROWED = 2;
+    LOST = 3;
+  }
+}
+
+// Окремі messages для запитів: форми запиту й відповіді еволюціонують незалежно.
+message GetCopyRequest {
+  string id = 1;
+}
+
+message RegisterCopyRequest {
+  string book_id = 1;
+  string inventory_number = 2;
+}
+
+message UpdateCopyStatusRequest {
+  string id = 1;
+  Copy.Status status = 2;
+}
+
+message WatchRequest {
+  string id = 1;
+  // max_updates > 0: сервер сам завершить потік після N повідомлень
+  // (клієнт побачить чистий io.EOF). 0 — слідкувати, доки клієнт не скасує виклик.
+  int32 max_updates = 2;
+}
+
+message StatusUpdate {
+  string copy_id = 1;
+  Copy.Status status = 2;
+  google.protobuf.Timestamp changed_at = 3;
+}
+
+message BulkRegisterSummary {
+  int32 registered = 1;
+  int32 failed = 2;
+  repeated string copy_ids = 3;
+}
+
+// SyncEvent використовується в обидва боки двонапрямленого потоку:
+// клієнт надсилає зміну, сервер відповідає підтвердженням (applied/note).
+message SyncEvent {
+  string branch_id = 1;
+  string copy_id = 2;
+  Copy.Status status = 3;
+  int64 sequence = 4;
+  bool applied = 5;
+  string note = 6;
+}
+
+// ---------------------------------------------------------------------------
+// Service (слайд 14): ключове слово `stream` визначає патерн виклику.
+// ---------------------------------------------------------------------------
+service InventoryService {
+  // Unary: отримати один примірник за ID. Аналог GET /v1/copies/{id}.
+  rpc GetCopy(GetCopyRequest) returns (Copy) {
+    option (google.api.http) = {
+      get: "/v1/copies/{id}"
+    };
+  }
+
+  // Unary: зареєструвати новий примірник.
+  rpc RegisterCopy(RegisterCopyRequest) returns (Copy) {
+    option (google.api.http) = {
+      post: "/v1/copies"
+      body: "*"
+    };
+  }
+
+  // Unary: змінити статус примірника (це "тригер" для WatchCopyStatus).
+  rpc UpdateCopyStatus(UpdateCopyStatusRequest) returns (Copy) {
+    option (google.api.http) = {
+      patch: "/v1/copies/{id}/status"
+      body: "*"
+    };
+  }
+
+  // Серверний стрімінг: 1 запит -> N відповідей (живі оновлення статусу).
+  // Через gateway віддається як потік JSON-рядків (NDJSON).
+  rpc WatchCopyStatus(WatchRequest) returns (stream StatusUpdate) {
+    option (google.api.http) = {
+      get: "/v1/copies/{id}/watch"
+    };
+  }
+
+  // Клієнтський стрімінг: N запитів -> 1 відповідь (масова реєстрація).
+  // Без HTTP-анотації: доступний лише як нативний gRPC.
+  rpc BulkRegisterCopies(stream RegisterCopyRequest)
+      returns (BulkRegisterSummary);
+
+  // Двонапрямлений стрімінг: синхронізація змін між філіями.
+  // Без HTTP-анотації: доступний лише як нативний gRPC.
+  rpc SyncInventory(stream SyncEvent) returns (stream SyncEvent);
+}
