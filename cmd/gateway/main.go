@@ -36,7 +36,7 @@ import (
 )
 
 func main() {
-	httpAddr := flag.String("http-addr", ":8080", "адреса REST-gateway")
+	httpAddr := flag.String("http-addr", "127.0.0.1:8080", "адреса REST-gateway")
 	grpcAddr := flag.String("grpc-addr", "localhost:50051", "адреса gRPC-сервера")
 	useTLS := flag.Bool("tls", false, "звертатися до gRPC-сервера через mTLS")
 	certDir := flag.String("cert-dir", "certs", "каталог із сертифікатами")

@@ -1,0 +1,18 @@
+services:
+  sonarqube:
+    image: sonarqube:community@sha256:aa0d41212704d1ed35f7ae3b49886b39f639590baf8020cdb191c2a2eb8f9eae
+    ports:
+      - "127.0.0.1:9000:9000"
+    environment:
+      # Local evaluation with embedded H2; not a production deployment.
+      SONAR_ES_BOOTSTRAP_CHECKS_DISABLE: "true"
+    volumes:
+      - sonar_data:/opt/sonarqube/data
+      - sonar_extensions:/opt/sonarqube/extensions
+      - sonar_logs:/opt/sonarqube/logs
+    mem_limit: 4g
+
+volumes:
+  sonar_data:
+  sonar_extensions:
+  sonar_logs:
