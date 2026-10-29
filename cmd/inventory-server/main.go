@@ -31,7 +31,7 @@ import (
 )
 
 func main() {
-	addr := flag.String("addr", ":50051", "адреса, яку слухає gRPC-сервер")
+	addr := flag.String("addr", "127.0.0.1:50051", "адреса, яку слухає gRPC-сервер")
 	useTLS := flag.Bool("tls", false, "увімкнути mTLS (потрібні сертифікати з `go run ./cmd/gencerts`)")
 	certDir := flag.String("cert-dir", "certs", "каталог із сертифікатами")
 	useAuth := flag.Bool("auth", false, "вимагати JWT-токен у metadata (authorization: Bearer ...)")

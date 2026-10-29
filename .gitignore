@@ -1,3 +1,9 @@
 certs/
 bin/
 *.log
+
+.env
+*.out
+*.jsonl
+.scannerwork/
+.DS_Store

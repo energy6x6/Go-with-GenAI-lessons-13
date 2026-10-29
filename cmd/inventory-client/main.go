@@ -36,13 +36,14 @@ import (
 )
 
 var (
-	addr       = flag.String("addr", "localhost:50051", "адреса gRPC-сервера")
-	useTLS     = flag.Bool("tls", false, "підключатися через (m)TLS")
-	certDir    = flag.String("cert-dir", "certs", "каталог із сертифікатами")
-	clientCert = flag.String("client-cert", "client", "ім'я клієнтського сертифіката: client | rogue-client | none")
-	token      = flag.String("token", os.Getenv("INVENTORY_TOKEN"), "JWT-токен (або змінна середовища INVENTORY_TOKEN)")
-	timeout    = flag.Duration("timeout", 5*time.Second, "таймаут для unary-викликів")
-	maxUpdates = flag.Int("max", 0, "watch: сервер завершить потік після N повідомлень (0 — без ліміту)")
+	addr          = flag.String("addr", "localhost:50051", "адреса gRPC-сервера")
+	useTLS        = flag.Bool("tls", false, "підключатися через (m)TLS")
+	certDir       = flag.String("cert-dir", "certs", "каталог із сертифікатами")
+	clientCert    = flag.String("client-cert", "client", "ім'я клієнтського сертифіката: client | rogue-client | none")
+	token         = flag.String("token", os.Getenv("INVENTORY_TOKEN"), "JWT-токен (або змінна середовища INVENTORY_TOKEN)")
+	timeout       = flag.Duration("timeout", 5*time.Second, "таймаут для unary-викликів")
+	streamTimeout = flag.Duration("stream-timeout", 30*time.Second, "ліміт тривалості watch-availability")
+	maxUpdates    = flag.Int("max", 0, "watch: сервер завершить потік після N повідомлень (0 — без ліміту)")
 )
 
 func main() {
@@ -75,6 +76,16 @@ func run(args []string) int {
 		err = needArgs(rest, 1, "get <id>")
 		if err == nil {
 			err = cmdGet(ctx, client, rest[0])
+		}
+	case "availability":
+		err = needArgs(rest, 1, "availability <book_id>")
+		if err == nil {
+			err = cmdAvailability(ctx, client, rest[0])
+		}
+	case "watch-availability":
+		err = needArgs(rest, 1, "watch-availability <book_id>")
+		if err == nil {
+			err = cmdWatchAvailability(ctx, client, rest[0])
 		}
 	case "register":
 		err = needArgs(rest, 2, "register <book_id> <inventory_number>")
@@ -316,6 +327,8 @@ func usage() {
   watch <id>                            серверний стрімінг: живі оновлення статусу
   bulk <book_id> <count>                клієнтський стрімінг: масова реєстрація
   sync                                  двонапрямлений стрімінг: синхронізація філій
+  availability <book_id>               unary: підсумок доступності книги
+  watch-availability <book_id>         серверний стрімінг: зміни доступності книги
 
 Прапорці:
 `)

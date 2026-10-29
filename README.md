@@ -1,401 +1,204 @@
-# LibraTrack · gRPC-демо до Уроку 13
+# LibraTrack gRPC Inventory
 
-Робочий приклад до презентації «Мікросервісна архітектура: gRPC замість REST»:
-`InventoryService` на Go з усіма чотирма типами викликів, REST-містком (grpc-gateway),
-mTLS, JWT-автентифікацією, тестами та бенчмарком. Усе запускається **локально**, без Docker і без хмари.
+Навчальний Go-сервіс обліку бібліотечних примірників для Task 13.
+Початкове демо збережено в `main`; розширення доступності книг розробляється в `develop` і подається через pull request у `main`.
 
-## Зміст
+## Можливості
 
-1. [Що всередині](#1-що-всередині)
-2. [Що потрібно встановити](#2-що-потрібно-встановити)
-3. [Швидкий старт (5 хвилин)](#3-швидкий-старт-5-хвилин)
-4. [Сценарії демонстрації](#4-сценарії-демонстрації)
-5. [Тести та бенчмарк](#5-тести-та-бенчмарк)
-6. [Перегенерація коду з .proto](#6-перегенерація-коду-з-proto)
-7. [Типові проблеми](#7-типові-проблеми)
-8. [Відмінності від слайдів](#8-відмінності-від-слайдів)
-9. [Зв'язок із домашнім завданням](#9-зв'язок-із-домашнім-завданням)
+| RPC | Тип | Призначення |
+| --- | --- | --- |
+| `GetCopy` | Unary | Примірник за ID |
+| `RegisterCopy` | Unary | Реєстрація примірника |
+| `UpdateCopyStatus` | Unary | Зміна стану примірника |
+| `WatchCopyStatus` | Server streaming | Живі зміни одного примірника |
+| `BulkRegisterCopies` | Client streaming | Пакетна реєстрація |
+| `SyncInventory` | Bidirectional streaming | Події та підтвердження |
+| **`GetBookAvailability`** | **Unary** | **Власне розширення: підсумок примірників книги** |
+| **`WatchBookAvailability`** | **Server streaming** | **Власне розширення: зміни підсумку в реальному часі** |
 
----
+Для нових методів визначено окремі Request/Response. Початкові RPC, поля, номери та HTTP-маршрути збережено; сумісність перевіряє `TestOriginalSchemaCompatibility`.
 
-## 1. Що всередині
+## Вимоги та структура
 
+Go 1.22+, Git; для smoke-перевірки — Python 3.8+, bash. Для ручних HTTP-викликів потрібен curl; grpcurl необов'язковий. Protoc 26.0 та плагіни потрібні лише для генерації. Docker потрібен лише для додаткового локального SonarQube.
+
+```text
+cmd/inventory-server/   gRPC-сервер
+cmd/inventory-client/   Go CLI для всіх восьми RPC
+cmd/gateway/            REST/JSON gateway
+cmd/gencerts/           локальні mTLS-сертифікати
+cmd/mint-token/         демонстраційні JWT
+proto/                 контракт inventory.v1.InventoryService
+gen/inventory/         згенеровані messages, stubs і gateway
+internal/store/        сховище в пам'яті, підсумки та підписки
+internal/server/       обробники RPC та транспортні тести
+internal/auth/         JWT/RBAC для unary і streaming
+internal/middleware/   логування та recovery
+internal/tlsconf/      mTLS-конфігурація
+bench/                 порівняння gRPC, REST і gateway
+scripts/               відтворювані перевірки
 ```
-proto/inventory.proto          контракт (слайди 12–14, 43)
-third_party/google/api/        annotations.proto, http.proto (потрібні для grpc-gateway)
-gen/inventory/                 ЗГЕНЕРОВАНИЙ код — вже в архіві, protoc для запуску не потрібен
-cmd/inventory-server/          gRPC-сервер  (:50051)
-cmd/inventory-client/          Go-клієнт: get, register, set-status, watch, bulk, sync
-cmd/gateway/                   REST/JSON місток до gRPC (:8080)
-cmd/gencerts/                  генератор сертифікатів для mTLS (без openssl)
-cmd/mint-token/                генератор демо-JWT
-internal/server/               реалізація всіх RPC + тести
-internal/auth/                 JWT, RBAC, інтерсептори (unary + stream)
-internal/middleware/           recovery і logging
-internal/tlsconf/              побудова tls.Config для mTLS
-internal/store/                сховище в пам'яті + підписки на зміни
-bench/                         бенчмарк gRPC vs REST vs REST-через-gateway
-scripts/smoke.sh               наскрізна перевірка
-```
 
-**Відповідність слайдам**
+## Швидкий запуск
 
-| Слайди | Де в коді |
-|---|---|
-| 12–14 (.proto) | `proto/inventory.proto` |
-| 15–16 (protoc, згенероване) | `Makefile` → `make proto`, `gen/inventory/` |
-| 19 (unary) | `GetCopy`, `RegisterCopy`, `UpdateCopyStatus` у `internal/server/server.go` |
-| 20 (серверний стрімінг) | `WatchCopyStatus` |
-| 21 (клієнтський стрімінг) | `BulkRegisterCopies` |
-| 22 (двонапрямлений) | `SyncInventory` |
-| 28, 43 (grpc-gateway) | `cmd/gateway`, HTTP-анотації в `.proto` |
-| 31 (mTLS) | `internal/tlsconf`, `cmd/gencerts` |
-| 32–33 (токени, інтерсептори) | `internal/auth`, `internal/middleware` |
-| 44, 46 (чеклісти) | `internal/server/*_test.go`, `scripts/smoke.sh` |
-| 47 (бенчмарк) | `bench/benchmark_test.go` |
-
----
-
-## 2. Що потрібно встановити
-
-| Інструмент | Обов'язково? | Навіщо |
-|---|---|---|
-| **Go 1.22+** | так | збірка і запуск. Перевірка: `go version` |
-| **curl** | для REST-сценаріїв | виклики gateway |
-| **grpcurl** | бажано | «curl для gRPC» (слайд 41) |
-| **protoc** + плагіни | лише якщо міняєте `.proto` | перегенерація коду |
-
-Потрібен інтернет **один раз**, щоб `go mod tidy` завантажив залежності.
-
-**Go:** https://go.dev/dl/ (або `brew install go`, `winget install GoLang.Go`, `sudo apt install golang-go` — якщо версія в apt старіша за 1.22, беріть з go.dev).
-
-**grpcurl** (будь-який варіант):
 ```bash
-brew install grpcurl                                  # macOS
-go install github.com/fullstorydev/grpcurl/cmd/grpcurl@latest   # будь-яка ОС; бінарник потрапить у $(go env GOPATH)/bin
-scoop install grpcurl                                 # Windows (Scoop)
+git clone --branch develop git@github.com:energy6x6/Go-with-GenAI-lessons-13.git
+cd Go-with-GenAI-lessons-13
+go mod download
+go test -race -count=1 ./...
 ```
-Переконайтеся, що `$(go env GOPATH)/bin` є у `PATH`.
 
-**protoc** (потрібен тільки для розділу 6):
+Термінал 1 — сервер:
+
 ```bash
-brew install protobuf                  # macOS
-sudo apt install protobuf-compiler     # Ubuntu/Debian
-winget install protobuf                # Windows  (або: choco install protoc)
-protoc --version
+go run ./cmd/inventory-server -addr 127.0.0.1:50051
 ```
 
-**Windows:** найзручніше працювати у **WSL** або **Git Bash** — тоді всі команди нижче працюють без змін.
-Для чистого PowerShell дивіться примітки з позначкою 🪟.
+Термінал 2 — власний unary RPC:
 
----
-
-## 3. Швидкий старт (5 хвилин)
-
-Відкрийте **три термінали** у каталозі проєкту.
-
-**Один раз, у будь-якому терміналі:**
 ```bash
-go mod tidy          # завантажить залежності й створить go.sum
-go test ./... -race  # перевірка, що все збирається і працює (≈10 с)
+go run ./cmd/inventory-client availability book-1
 ```
 
-**Термінал 1 — сервер:**
+Після свіжого запуску: `total=2`, `available=1`, `borrowed=1`, `lost=0`, `revision=3`. Protobuf JSON представляє `uint64 revision` рядком.
+
+## Власний server streaming
+
+Після свіжого запуску сервера в терміналі 2:
+
 ```bash
-go run ./cmd/inventory-server
+go run ./cmd/inventory-client -max 3 -stream-timeout 60s watch-availability book-1
 ```
-Очікуєте рядок `inventory server started addr=0.0.0.0:50051 ...`. Сервер пише лог кожного виклику (метод, gRPC-код, тривалість).
 
-**Термінал 2 — клієнт:**
+У терміналі 3 виконуйте наступну команду після появи попереднього оновлення:
+
+```bash
+go run ./cmd/inventory-client set-status copy-1 LOST
+go run ./cmd/inventory-client register book-1 DEMO-NEW
+```
+
+Очікуваний потік:
+
+```text
+book=book-1 total=2 available=1 borrowed=1 lost=0 revision=3
+book=book-1 total=2 available=0 borrowed=1 lost=1 revision=4
+book=book-1 total=3 available=1 borrowed=1 lost=1 revision=5
+потік завершено сервером (io.EOF) — все гаразд
+```
+
+Перший знімок і підписка створюються атомарно. Після реєстрації або фактичної зміни стану `revision` зростає; повторний запис того самого стану оновлення не створює. Зміни іншої книги не надсилаються.
+
+Це потік **актуального стану**, а не журнал подій: один очікуваний знімок у буфері замінюється новішим для повільного клієнта. Проміжні ревізії можуть пропускатися. Дані та ревізії скидаються після перезапуску сервера.
+
+`-max 1` повертає один знімок і EOF. `-max 0` працює до Ctrl+C або дедлайну; `-stream-timeout` типово становить 30 секунд. Скасування, дедлайн і завершення звільняють підписку; сервер має обмежену в часі м'яку зупинку.
+
+## Початкові приклади та помилки
+
 ```bash
 go run ./cmd/inventory-client get copy-1
+go run ./cmd/inventory-client get missing                  # NotFound
+go run ./cmd/inventory-client register book-9 DEMO-9001
+go run ./cmd/inventory-client register book-9 DEMO-9001     # AlreadyExists
+go run ./cmd/inventory-client bulk book-7 3                # registered=3
+go run ./cmd/inventory-client bulk book-7 3                # failed=3
+go run ./cmd/inventory-client sync                         # applied=true та applied=false
+go run ./cmd/inventory-client -max 1 watch copy-1           # знімок і EOF
+go run ./cmd/inventory-client availability missing         # NotFound
+go run ./cmd/inventory-client availability ''              # InvalidArgument
 ```
-Очікуваний результат:
-```json
-{
-  "id": "copy-1",
-  "book_id": "book-1",
-  "inventory_number": "INV-0001",
-  "status": "AVAILABLE"
-}
-```
 
-**Термінал 3 — REST-місток** (потрібен сервер із терміналу 1):
-```bash
-go run ./cmd/gateway
-curl localhost:8080/v1/copies/copy-1        # у ще одному вікні
-```
-🪟 PowerShell: замість `curl` пишіть `curl.exe` (інакше спрацює псевдонім `Invoke-WebRequest`).
+Усі прапорці ставте перед командою. Unary-виклики мають типовий таймаут 5 секунд (`-timeout`). Для нових RPC порожній/пробільний `book_id` та від'ємний `max_updates` некоректні. Книга без зареєстрованих примірників повертає `NotFound`.
 
-Початкові дані: `copy-1` (AVAILABLE), `copy-2` (BORROWED), `copy-3` (LOST).
-Зупинка будь-якого процесу — `Ctrl+C`.
+## REST gateway
 
----
-
-## 4. Сценарії демонстрації
-
-Усі сценарії йдуть за чекліст слайда 44. Сервер і gateway мають бути запущені (розділ 3).
-
-### 4.1 Unary і коди помилок (слайди 19, 44)
+В окремому терміналі:
 
 ```bash
-go run ./cmd/inventory-client get copy-1      # повертає Copy
-go run ./cmd/inventory-client get nope        # RPC помилка: code=NotFound message="copy nope not found"
-go run ./cmd/inventory-client register book-5 INV-5001
-go run ./cmd/inventory-client register book-5 INV-5001   # code=AlreadyExists
+go run ./cmd/gateway -http-addr 127.0.0.1:8080 -grpc-addr 127.0.0.1:50051
 ```
-
-Те саме через **grpcurl** (слайд 41) — без жодного Go-коду, завдяки server reflection:
-```bash
-grpcurl -plaintext localhost:50051 list
-grpcurl -plaintext localhost:50051 list inventory.v1.InventoryService
-grpcurl -plaintext -d '{"id":"copy-1"}' localhost:50051 inventory.v1.InventoryService/GetCopy
-grpcurl -plaintext -d '{"id":"nope"}'   localhost:50051 inventory.v1.InventoryService/GetCopy
-```
-🪟 PowerShell: JSON у `-d` потребує екранування: `-d '{\"id\":\"copy-1\"}'`.
-
-> grpcurl друкує поля у camelCase (`bookId`) — це стандартне JSON-відображення Protobuf.
-> Gateway і наш клієнт налаштовані на snake_case (`book_id`), як у REST API з Уроку 7.
-
-**Що показати студентам:** помилка — це `codes.NotFound`, а не загальний `Unknown` (слайд 45).
-
-### 4.2 Серверний стрімінг: живі оновлення (слайди 20, 42)
-
-Потрібні два термінали. У першому:
-```bash
-go run ./cmd/inventory-client -max 3 watch copy-1
-```
-Він одразу покаже поточний статус. У другому змінюйте статус:
-```bash
-go run ./cmd/inventory-client set-status copy-1 BORROWED
-go run ./cmd/inventory-client set-status copy-1 AVAILABLE
-```
-У першому терміналі зʼявляться оновлення, а після третього сервер сам закриє потік, і клієнт напише `потік завершено сервером (io.EOF) — все гаразд`.
-
-**Скасування клієнтом (слайд 46, «чи не витікає горутина»):** запустіть `watch copy-1` без `-max` і натисніть `Ctrl+C`. У логу сервера з'явиться:
-```
-msg="watch finished" copy_id=copy-1 reason="client gone / cancelled"
-```
-Це доводить, що обробник бачить скасування через `stream.Context()` і звільняє підписку.
-
-**Автоматичні зміни без другого терміналу:** запустіть сервер з `-simulate` (статуси міняються кожні 2 с, інтервал: `-sim-interval 1s`):
-```bash
-go run ./cmd/inventory-server -simulate
-go run ./cmd/inventory-client -max 5 watch copy-1
-```
-
-### 4.3 Клієнтський стрімінг (слайд 21)
 
 ```bash
-go run ./cmd/inventory-client bulk book-7 5     # registered: 5
-go run ./cmd/inventory-client bulk book-7 5     # повторно: failed: 5 (AlreadyExists)
+curl -i http://127.0.0.1:8080/v1/copies/copy-1
+curl -i http://127.0.0.1:8080/v1/books/book-1/availability
+curl -N 'http://127.0.0.1:8080/v1/books/book-1/availability/watch?max_updates=1'
+curl -i http://127.0.0.1:8080/v1/books/missing/availability  # 404
 ```
-Партія реєструється одним викликом; один поганий запис не валить решту.
 
-### 4.4 Двонапрямлений стрімінг (слайд 22)
+Unary-відповідь gateway за змістом збігається з нативним gRPC. Server streaming доступний як JSON-потік; client streaming та bidi доступні лише через gRPC.
 
 ```bash
-go run ./cmd/inventory-client sync
+grpcurl -plaintext 127.0.0.1:50051 list inventory.v1.InventoryService
+grpcurl -plaintext -d '{"book_id":"book-1"}' 127.0.0.1:50051 inventory.v1.InventoryService/GetBookAvailability
 ```
-Клієнт надсилає три події, сервер підтверджує кожну (`applied=true`), а подія для неіснуючого `copy-999` отримує `applied=false`. Надсилання й отримання йдуть незалежно.
 
-### 4.5 REST через grpc-gateway (слайди 28, 43)
+## mTLS та JWT/RBAC
+
+Зупиніть попередні сервер і gateway. Сертифікати створюйте поза репозиторієм:
 
 ```bash
-curl -i localhost:8080/v1/copies/copy-1                       # 200
-curl -i localhost:8080/v1/copies/nope                         # 404  (було NotFound)
-curl -X POST  localhost:8080/v1/copies -d '{"book_id":"book-8","inventory_number":"INV-8001"}'
-curl -i -X POST localhost:8080/v1/copies -d '{"book_id":"book-8","inventory_number":"INV-8001"}'   # 409 (AlreadyExists)
-curl -X PATCH localhost:8080/v1/copies/copy-1/status -d '{"status":"LOST"}'
-curl -i -X PATCH localhost:8080/v1/copies/copy-1/status -d '{"status":"STATUS_UNSPECIFIED"}'      # 400
+export CERT_DIR="$(mktemp -d /tmp/libratrack-certs.XXXXXX)"
+go run ./cmd/gencerts -dir "$CERT_DIR"
+go run ./cmd/inventory-server -tls -auth -cert-dir "$CERT_DIR"
 ```
 
-Стрімінг через REST (потік JSON-рядків):
-```bash
-curl -N "localhost:8080/v1/copies/copy-1/watch?max_updates=3"
-# в іншому терміналі: curl -X PATCH localhost:8080/v1/copies/copy-1/status -d '{"status":"BORROWED"}'
-```
-
-Порівняйте з пунктом 4.1: та сама відповідь, але у форматі JSON. Клієнтський та двонапрямлений стрімінг через gateway **не** відкрито (у `.proto` для них немає HTTP-анотацій) — вони доступні лише як нативний gRPC.
-
-🪟 PowerShell: JSON у `-d` пишіть як `-d '{\"book_id\":\"book-8\",\"inventory_number\":\"INV-8001\"}'`.
-
-### 4.6 Токен-автентифікація (слайди 32–33)
-
-Перезапустіть сервер із `-auth`:
-```bash
-go run ./cmd/inventory-server -auth
-```
-Згенеруйте токени:
-```bash
-export LIB=$(go run ./cmd/mint-token -sub anna -role librarian)
-export RDR=$(go run ./cmd/mint-token -sub oleh -role reader)
-```
-🪟 PowerShell: `$env:LIB = go run ./cmd/mint-token -sub anna -role librarian` (і так само `$env:RDR`), далі використовуйте `$env:LIB` замість `$LIB`.
-
-Перевірте:
-```bash
-go run ./cmd/inventory-client get copy-1                       # code=Unauthenticated "missing token"
-go run ./cmd/inventory-client -token "$RDR" get copy-1         # ок
-go run ./cmd/inventory-client -token "$RDR" register b INV-1   # code=PermissionDenied (reader не може писати)
-go run ./cmd/inventory-client -token "$RDR" bulk book-3 2      # PermissionDenied: стрімінгові RPC теж захищені
-go run ./cmd/inventory-client -token "$LIB" register b INV-1   # ок
-```
-Через grpcurl: `grpcurl -plaintext -H "authorization: Bearer $RDR" -d '{"id":"copy-1"}' localhost:50051 inventory.v1.InventoryService/GetCopy`.
-
-Через REST (gateway сам перекладає заголовок `Authorization` у gRPC-metadata):
-```bash
-curl -i localhost:8080/v1/copies/copy-1                                    # 401
-curl -i -H "Authorization: Bearer $RDR" localhost:8080/v1/copies/copy-1    # 200
-curl -i -H "Authorization: Bearer $RDR" -X POST localhost:8080/v1/copies -d '{"book_id":"b","inventory_number":"X"}'   # 403
-```
-
-Ролі та політика (хто який метод може викликати) — `DefaultPolicy()` у `internal/auth/interceptor.go`. Метод, якого немає в політиці, заборонено за замовчуванням. Токен діє годину (`-ttl 5m` для коротшого; `-ttl=-1m` дає вже протермінований — зручно для тесту).
-
-> Токен (`INVENTORY_TOKEN`) також можна передати змінною середовища замість `-token`.
-
-### 4.7 mTLS (слайди 30–31)
+В іншому терміналі задайте `CERT_DIR` тим самим абсолютним шляхом і виконайте:
 
 ```bash
-go run ./cmd/gencerts                       # створить каталог certs/
-go run ./cmd/inventory-server -tls -auth    # термінал 1
-go run ./cmd/gateway -tls                   # термінал 3 (gateway теж ходить до сервера по mTLS)
-```
-Успішний виклик (довірений клієнтський сертифікат + токен):
-```bash
-go run ./cmd/inventory-client -tls -token "$LIB" get copy-1
-```
-Негативні сценарії — те, заради чого існує mTLS:
-
-| Команда | Результат |
-|---|---|
-| `go run ./cmd/inventory-client get copy-1` (без `-tls`) | `Unavailable ... error reading server preface: EOF` |
-| `... -tls -client-cert none -token "$LIB" get copy-1` | `Unavailable ... tls: certificate required` |
-| `... -tls -client-cert rogue-client -token "$LIB" get copy-1` | `Unavailable ... connection reset by peer` |
-| `... -tls get copy-1` (без токена) | `Unauthenticated: missing token` (mTLS пройдено, токена немає) |
-
-Останній рядок показує, що mTLS автентифікує **сервіс**, а токен — **користувача** (слайд 31): це два незалежні рівні.
-
-**Чому повідомлення клієнта розпливчасті?** У TLS 1.3 клієнт завершує рукостискання раніше, ніж сервер перевірить його сертифікат, тому справжню причину видно лише на сервері. Щоб побачити її, запустіть сервер так:
-```bash
-GRPC_GO_LOG_SEVERITY_LEVEL=info go run ./cmd/inventory-server -tls -auth       # bash / zsh
-$env:GRPC_GO_LOG_SEVERITY_LEVEL="info"; go run ./cmd/inventory-server -tls -auth   # PowerShell
-```
-У логу з'являться причини, наприклад `x509: certificate signed by unknown authority` (для `rogue-client`) або `client didn't provide a certificate` (для `none`).
-
-grpcurl з mTLS:
-```bash
-grpcurl -cacert certs/ca.pem -cert certs/client.pem -key certs/client-key.pem \
-  -H "authorization: Bearer $RDR" -d '{"id":"copy-1"}' \
-  localhost:50051 inventory.v1.InventoryService/GetCopy
+export INVENTORY_TOKEN="$(go run ./cmd/mint-token -role reader)"
+go run ./cmd/inventory-client -tls -cert-dir "$CERT_DIR" availability book-1
+go run ./cmd/inventory-client -tls -cert-dir "$CERT_DIR" -max 1 watch-availability book-1
+go run ./cmd/inventory-client -tls -cert-dir "$CERT_DIR" register book-1 DENIED  # PermissionDenied
 ```
 
-> Сертифікати з `gencerts` дійсні рік і призначені **лише для локального демо**. Каталог `certs/` додано до `.gitignore`. У продакшені їх видає внутрішній CA з автоматичною ротацією (cert-manager).
+`reader` читає та спостерігає; `librarian` також змінює інвентар. Методи без правила заборонено. Без JWT — `Unauthenticated`; без довіреного клієнтського сертифіката — відмова mTLS. Smoke-перевірка відтворює ці сценарії без виводу токенів.
 
----
+Без TLS застосунок призначений лише для локального запуску; типові адреси прив'язані до loopback. Вихідний JWT-код HS256 і сертифікати є демонстраційними. Reflection увімкнено для grpcurl. Це навчальний приклад, а не конфігурація для production.
 
-## 5. Тести та бенчмарк
+## Перевірки та генерація
 
 ```bash
-go test ./... -race -count=1            # усі тести
-go test ./internal/server -run Watch -v # лише стрімінг
+go build ./...
+go vet ./...
+go test -race -count=1 ./...
+bash scripts/smoke.sh
 ```
-Тести відповідають чекліст слайдів 44 і 46: `NotFound` замість `Unknown`, `io.EOF` після завершення стріму, **відсутність витоку підписки після скасування клієнтом**, захист стрімінгових RPC, відхилення токена з `alg=none`.
 
-**Бенчмарк (слайд 47):**
-```bash
-go test ./bench -run TestPayloadSize -v                    # розмір повідомлень
-go test ./bench -run '^$' -bench=. -benchmem -benchtime=2s # швидкість
-```
-Бенчмарк порівнює три шляхи до тих самих даних на loopback: нативний gRPC, рукописний REST/JSON і REST через gateway. З'єднання перевикористовуються, а тіло HTTP-відповіді вичитується й закривається — інакше з'єднання не повертається в пул, і порівняння буде нечесним.
-
-**Мої виміри** (Linux, 1 vCPU, Go 1.22, `-benchtime=3s`; у вас цифри будуть іншими):
-
-| Що міряємо | Результат |
-|---|---|
-| Розмір `Copy` у мережі | Protobuf **28 байт**, JSON **85 байт** (≈3×) |
-| Серіалізація + десеріалізація | Protobuf ≈ 410 нс, JSON ≈ 1850 нс (≈4,5× швидше) |
-| Один виклик, gRPC | ≈ 33 мкс |
-| Один виклик, рукописний REST | ≈ 24 мкс |
-| Один виклик, REST через gateway | ≈ 80 мкс (додатковий «стрибок») |
-
-**Не очікуйте, що gRPC виграє в кожному рядку.** Формат справді компактніший і швидший, але для одного крихітного повідомлення на loopback накладні витрати транспорту переважують, і рукописний REST у моєму вимірі навіть випередив gRPC. Це узгоджується зі слайдом 10 («для одного запиту це майже не має значення»). Перевага gRPC проявляється за більших повідомлень, високої паралельності на багатьох ядрах, стрімінгу та повільної мережі. Для домашнього завдання вимірюйте на власному сервісі й описуйте те, що побачили, а не те, що «має бути».
-
-Те, що REST через gateway найповільніший, теж закономірно: запит проходить два протоколи. Тому внутрішні сервіси мають викликати gRPC напряму, оминаючи gateway.
-
----
-
-## 6. Перегенерація коду з .proto
-
-Потрібна лише якщо ви змінюєте `proto/inventory.proto`. Згенерований код уже лежить у `gen/inventory/`.
+Smoke запускає окремі процеси, виконує 31 сценарій, прибирає власні процеси та друкує шлях до зовнішнього каталогу доказів. Порти 50051 і 8080 мають бути вільними. Можна явно передати `--evidence-dir /absolute/path/outside/repository`.
 
 ```bash
-make tools      # встановить protoc-gen-go, protoc-gen-go-grpc, protoc-gen-grpc-gateway (версії зафіксовано)
-make proto      # запустить protoc
+make tools
+export PATH="$(go env GOPATH)/bin:$PATH"
+make proto
+git diff -- gen/
 ```
-Без `make` (наприклад, Windows) — виконайте напряму:
+
+Версії плагінів зафіксовано в Makefile. Для точного відтворення generated-файлів використовується protoc 26.0. Повторна генерація не має змінювати файли. GitHub Actions перевіряє module-файли, форматування, build, vet, race tests, сумісність із `main`, генерацію та smoke на Linux з Go 1.22.12.
+
+## Бенчмарк
+
 ```bash
-go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.34.2
-go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.5.1
-go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway@v2.20.0
-
-protoc -I proto -I third_party \
-  --go_out=. --go_opt=module=libratrack \
-  --go-grpc_out=. --go-grpc_opt=module=libratrack \
-  --grpc-gateway_out=. --grpc-gateway_opt=module=libratrack \
-  proto/inventory.proto
+go test ./bench -run TestPayloadSize -v
+go test ./bench -run '^$' -bench=. -benchmem -benchtime=1s -count=3
 ```
-(у PowerShell запишіть команду `protoc` в один рядок). Плагіни мають бути в `PATH`: додайте `$(go env GOPATH)/bin`.
 
-Після зміни `.proto` запустіть `go build ./... && go test ./...`: якщо ви змінили або видалили метод, компілятор одразу покаже, що зламалось. Це і є «контракт, що контролюється компілятором» зі слайда 27.
+Локальна перевірка 29.10.2026, macOS amd64, Go 1.27.1: медіани трьох послідовних прогонів — gRPC **95,003 мкс**, REST **81,052 мкс**, REST через gateway **213,133 мкс**. Серіалізоване тіло прикладу: Protobuf **28 байт**, JSON **85 байт**, без транспортного framing.
 
-Згенеровані файли не редагуйте вручну (слайд 16).
+Це виміри невеликого повідомлення на loopback, зі з'єднаннями, що перевикористовуються. Паралельні прогони мали помітний розкид; результати не є гарантією швидкості протоколу. Повні логи вимірів зберігаються окремо від коду.
 
----
+## Локальний SonarQube
 
-## 7. Типові проблеми
+Додаткова статична перевірка виконується в SonarQube Community через Docker. `sonar-project.properties` виключає generated-код і сторонні схеми; токен, робочий каталог scanner та звіт покриття передаються ззовні. Локальний результат не позначається як SonarQube Cloud.
 
-| Симптом | Причина і рішення |
-|---|---|
-| `missing go.sum entry` / `no required module provides package` | Не виконано `go mod tidy`. Запустіть його (потрібен інтернет). |
-| `go mod tidy` не знаходить версію `genproto` | Виконайте `go get google.golang.org/genproto/googleapis/api@latest google.golang.org/grpc@latest google.golang.org/protobuf@latest github.com/grpc-ecosystem/grpc-gateway/v2@latest`, потім `go mod tidy`. У цьому разі після оновлення перегенеруйте код (`make proto`). |
-| `requires go >= 1.xx` | Стара версія Go. Оновіть з https://go.dev/dl/ |
-| `code=Unavailable ... connection refused` | Сервер не запущено або інший порт. Перевірте термінал 1 і прапорець `-addr`. |
-| `listen tcp :50051: bind: address already in use` | Порт зайнято (часто — старий екземпляр сервера). Закрийте його або `-addr :50052` (і `-addr localhost:50052` у клієнті). |
-| gateway відповідає `503` / `Unavailable` | Gateway не бачить gRPC-сервер: перевірте `-grpc-addr` і чи збігається режим `-tls`. |
-| `RPC помилка: code=Unauthenticated` | Сервер запущено з `-auth`, а токена немає або він протермінований. Згенеруйте новий (`mint-token`). Секрет має збігатися (`-jwt-secret` / `JWT_SECRET`). |
-| `load server cert (запустіть go run ./cmd/gencerts)` | Немає `certs/`. Запустіть `go run ./cmd/gencerts` з кореня проєкту (клієнт і сервер шукають `certs/` відносно поточного каталогу; інший шлях — `-cert-dir`). |
-| `x509: certificate is valid for ..., not ...` | Підключення за іншим ім'ям. Сертифікат сервера дійсний для `localhost`, `127.0.0.1`, `::1`. |
-| `protoc-gen-go: program not found` | Плагіни не в `PATH`. Додайте `$(go env GOPATH)/bin`. |
-| `google/api/annotations.proto: File not found` | Пропущено `-I third_party` у команді `protoc`. |
-| `google/protobuf/timestamp.proto: File not found` | `protoc` встановлено без каталогу `include`. На Windows при ручному розпакуванні архіву покладіть папку `include` поруч із `bin`. |
-| `curl` у PowerShell поводиться дивно | Це псевдонім. Використовуйте `curl.exe`. |
-| `grpcurl: Failed to dial target host ... context deadline exceeded` | Сервер запущено з `-tls`, а grpcurl іде з `-plaintext` або без клієнтського сертифіката. Використайте `-cacert/-cert/-key` (розділ 4.7). |
-| Сервер довго не зупиняється по `Ctrl+C` | Відкритий стрім блокує м'яку зупинку. Сервер чекає 5 с і зупиняється примусово — це нормально. |
+## Діагностика
 
----
+| Симптом | Що перевірити |
+| --- | --- |
+| `Unavailable` | Чи запущений сервер, адреса та режим TLS |
+| Зайнятий порт | Зупиніть власний попередній процес або змініть `-addr` / `-http-addr` |
+| `Unauthenticated` | Токен, його строк дії та однаковий секрет сервера й генератора |
+| `PermissionDenied` | Роль і правила для відповідного unary/stream RPC |
+| Помилка сертифіката | Спільний `CERT_DIR`, довірений CA, ім'я localhost/127.0.0.1 |
+| Потік чекає наступного повідомлення | Змініть стан, задайте `-max 1` або натисніть Ctrl+C |
+| `DeadlineExceeded` у watch-availability | Збільште `-stream-timeout` або задайте `-max` |
 
-## 8. Відмінності від слайдів
-
-Усе це зроблено свідомо, щоб демо було запускним і безпечним:
-
-- **`--go_opt=module=libratrack` замість `paths=source_relative`.** Зі `source_relative` файли лягли б у `proto/`, а `go_package` вказує на `libratrack/gen/inventory`. З `module=` код потрапляє точно у `gen/inventory/`, і шлях імпорту збігається.
-- **Один `.proto`-файл** замість трьох умовних (`messages`, `inventory_service`, ...) — простіше запускати.
-- **Додаткові RPC `RegisterCopy` та `UpdateCopyStatus`.** Другий потрібен, щоб було що спостерігати у `watch`; перший використовує `BulkRegisterCopies`.
-- **`stream`-інтерсептор поруч з unary.** На слайді 32 показано лише unary, але без stream-версії три стрімінгові RPC залишились би без автентифікації (є тест `TestAuth_StreamingRPCsAreProtectedToo`).
-- **JWT реалізовано мінімально на stdlib** (HS256), щоб не додавати залежність і показати механіку. У продакшені — `golang-jwt/jwt`.
-- **Gateway на `net/http`, а не Gin.** `*runtime.ServeMux` — це `http.Handler`; приклад підключення до Gin є в коментарі `cmd/gateway/main.go`.
-- **`grpc.NewClient`** замість застарілих `grpc.Dial` / `WithBlock`.
-- **Вимкнений за замовчуванням `-simulate`.** Статуси змінюються лише вашими викликами, тому відповіді в README передбачувані.
-- **Server reflection увімкнено** заради `grpcurl`. У продакшені її вимикають.
-- Відкритий текст (`insecure.NewCredentials()`) — тільки для локальної розробки, як і сказано на слайдах 33 та 44.
-
-**Що перевірено автором.** Код зібрано і прогнано на Linux з Go 1.22.2: `go vet`, `gofmt`, тести з `-race`, `scripts/smoke.sh`, ручні сценарії розділу 4 (включно з mTLS, токенами, grpcurl, curl). Версії залежностей зафіксовано у `go.mod` (grpc 1.64.1, protobuf 1.34.2, grpc-gateway 2.20.0). Скачування залежностей через `go mod tidy` у середовищі автора було недоступне (модульний проксі закритий), тому його відтворено збіркою з вихідників тих самих версій. Якщо `go mod tidy` у вас видасть помилку, скористайтеся рядком з розділу 7. Запуск на Windows і macOS не перевірявся.
-
----
-
-## 9. Зв'язок із домашнім завданням
-
-1. **Сервіс із 3+ методами, один зі стрімінгом.** Скопіюйте структуру: змініть `proto/inventory.proto` під власну предметну область, виконайте `make proto`, реалізуйте методи за зразком `internal/server/server.go`.
-2. **Клієнт і бенчмарк gRPC vs REST.** Візьміть `bench/benchmark_test.go` як шаблон: замініть дані й методи, збережіть умови чесного порівняння (розділ 5).
-3. **`.proto` від ШІ та перевірка.** Попросіть ШІ згенерувати `.proto` за описом і звірте результат із чеклістом слайдів 17 та 37: нумерація полів, нульове значення enum, `stream` лише там, де потрібно, `package` з версією, коректність кодів помилок.
+Перевірено локально на macOS amd64; Linux перевіряється CI. Для Windows використовуйте WSL/Git Bash; нативний PowerShell окремо не перевірявся.

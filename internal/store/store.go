@@ -29,20 +29,24 @@ type Change struct {
 }
 
 type Store struct {
-	mu     sync.RWMutex
-	copies map[string]*pb.Copy
-	byInv  map[string]string // inventory_number -> id
-	nextID int
-	subs   map[string]map[chan Change]struct{}
+	mu           sync.RWMutex
+	copies       map[string]*pb.Copy
+	byInv        map[string]string // inventory_number -> id
+	nextID       int
+	subs         map[string]map[chan Change]struct{}
+	availability map[string]BookAvailability
+	bookSubs     map[string]map[chan BookAvailability]struct{}
 }
 
 // New створює сховище з трьома початковими примірниками (copy-1..copy-3).
 func New() *Store {
 	s := &Store{
-		copies: make(map[string]*pb.Copy),
-		byInv:  make(map[string]string),
-		nextID: 1,
-		subs:   make(map[string]map[chan Change]struct{}),
+		copies:       make(map[string]*pb.Copy),
+		byInv:        make(map[string]string),
+		nextID:       1,
+		subs:         make(map[string]map[chan Change]struct{}),
+		availability: make(map[string]BookAvailability),
+		bookSubs:     make(map[string]map[chan BookAvailability]struct{}),
 	}
 	_, _ = s.Create("book-1", "INV-0001") // copy-1
 	_, _ = s.Create("book-1", "INV-0002") // copy-2
@@ -80,6 +84,7 @@ func (s *Store) Create(bookID, inventoryNumber string) (*pb.Copy, error) {
 	}
 	s.copies[id] = c
 	s.byInv[inventoryNumber] = id
+	s.recordCreatedLocked(bookID)
 	return proto.Clone(c).(*pb.Copy), nil
 }
 
@@ -92,7 +97,9 @@ func (s *Store) SetStatus(id string, st pb.Copy_Status) (*pb.Copy, error) {
 		return nil, ErrNotFound
 	}
 	if c.Status != st {
+		old := c.Status
 		c.Status = st
+		s.recordStatusLocked(c.BookId, old, st)
 		s.publishLocked(Change{CopyID: id, Status: st, At: time.Now()})
 	}
 	return proto.Clone(c).(*pb.Copy), nil

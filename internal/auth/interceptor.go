@@ -32,12 +32,14 @@ func DefaultPolicy() Policy {
 	both := []string{RoleReader, RoleLibrarian}
 	staff := []string{RoleLibrarian}
 	return Policy{
-		servicePrefix + "GetCopy":            both,
-		servicePrefix + "WatchCopyStatus":    both,
-		servicePrefix + "RegisterCopy":       staff,
-		servicePrefix + "UpdateCopyStatus":   staff,
-		servicePrefix + "BulkRegisterCopies": staff,
-		servicePrefix + "SyncInventory":      staff,
+		servicePrefix + "GetCopy":               both,
+		servicePrefix + "GetBookAvailability":   both,
+		servicePrefix + "WatchBookAvailability": both,
+		servicePrefix + "WatchCopyStatus":       both,
+		servicePrefix + "RegisterCopy":          staff,
+		servicePrefix + "UpdateCopyStatus":      staff,
+		servicePrefix + "BulkRegisterCopies":    staff,
+		servicePrefix + "SyncInventory":         staff,
 	}
 }
 

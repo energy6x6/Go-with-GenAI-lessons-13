@@ -78,6 +78,49 @@ message SyncEvent {
   string note = 6;
 }
 
+// BookAvailability — поточна кількість примірників книги за станами.
+message BookAvailability {
+  // Книга, до якої належать примірники.
+  string book_id = 1;
+  // Загальна кількість зареєстрованих примірників.
+  int32 total = 2;
+  // Кількість примірників, доступних для видачі.
+  int32 available = 3;
+  // Кількість виданих примірників.
+  int32 borrowed = 4;
+  // Кількість втрачених примірників.
+  int32 lost = 5;
+  // Зростає при реєстрації примірника або фактичній зміні його стану.
+  uint64 revision = 6;
+}
+
+// GetBookAvailabilityRequest — запит поточного підсумку для однієї книги.
+message GetBookAvailabilityRequest {
+  // Обов'язковий непорожній ідентифікатор книги.
+  string book_id = 1;
+}
+
+// GetBookAvailabilityResponse — один узгоджений знімок стану.
+message GetBookAvailabilityResponse {
+  // Підсумок усіх примірників книги.
+  BookAvailability availability = 1;
+}
+
+// WatchBookAvailabilityRequest — підписка на актуальний стан книги.
+message WatchBookAvailabilityRequest {
+  // Обов'язковий непорожній ідентифікатор книги.
+  string book_id = 1;
+  // 0: до скасування/дедлайну; >0: завершити після N повідомлень зі знімком включно.
+  int32 max_updates = 2;
+}
+
+// WatchBookAvailabilityResponse — початковий знімок або новіший стан.
+// Повільний клієнт може пропустити проміжні ревізії; останній стан зберігається.
+message WatchBookAvailabilityResponse {
+  // Підсумок з монотонно зростаючою revision у межах одного запуску сервера.
+  BookAvailability availability = 1;
+}
+
 // ---------------------------------------------------------------------------
 // Service (слайд 14): ключове слово `stream` визначає патерн виклику.
 // ---------------------------------------------------------------------------
@@ -121,4 +164,18 @@ service InventoryService {
   // Двонапрямлений стрімінг: синхронізація змін між філіями.
   // Без HTTP-анотації: доступний лише як нативний gRPC.
   rpc SyncInventory(stream SyncEvent) returns (stream SyncEvent);
+  // Unary: підсумок за книгою. InvalidArgument: порожній book_id; NotFound: книга без примірників.
+  rpc GetBookAvailability(GetBookAvailabilityRequest) returns (GetBookAvailabilityResponse) {
+    option (google.api.http) = {
+      get: "/v1/books/{book_id}/availability"
+    };
+  }
+
+  // Server stream: знімок, потім актуальні зміни. Ті самі помилки; від'ємний max_updates — InvalidArgument.
+  // Скасування звільняє підписку; досягнення max_updates завершує потік успішно.
+  rpc WatchBookAvailability(WatchBookAvailabilityRequest) returns (stream WatchBookAvailabilityResponse) {
+    option (google.api.http) = {
+      get: "/v1/books/{book_id}/availability/watch"
+    };
+  }
 }
